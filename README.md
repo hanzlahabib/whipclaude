@@ -71,7 +71,7 @@ whipclaude          # launch (spawns whip immediately)
 
 - Move your mouse to swing the whip
 - Crack it fast enough and Claude gets disciplined
-- Right-click tray icon → Spawn Whip / Quit
+- Right-click tray icon to spawn or quit
 
 ## Sounds
 
@@ -79,12 +79,8 @@ WhipClaude ships with embedded audio (whip cracks, cat yowls, scream effects). A
 
 ## Contributing
 
-PRs welcome. Please:
-- Keep it funny
-- Keep it cross-platform
-- No crypto miners (see [#3](https://github.com/hanzlahabib/whipclaude/issues/3))
-- Stream deck integration welcome (see [#2](https://github.com/hanzlahabib/whipclaude/issues/2))
+PRs welcome. Keep it funny and cross-platform.
 
 ## License
 
-MIT — see [LICENSE](LICENSE)
+MIT. See [LICENSE](LICENSE)

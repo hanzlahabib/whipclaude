@@ -1,0 +1,24 @@
+[package]
+name = "whipclaude"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "whipclaude"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+egui = "0.31"
+tray-icon = "0.20"
+rodio = { version = "0.20", default-features = false, features = ["mp3"] }
+enigo = "0.3"
+rand = "0.9"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[profile.release]
+opt-level = 3
+strip = true

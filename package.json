@@ -1,0 +1,24 @@
+{
+  "name": "whipclaude",
+  "version": "0.1.0",
+  "description": "Crack a whip at Claude when it's going too slow. A transparent overlay with physics-based whip animation, sound effects, combo system, and mercy mode.",
+  "keywords": ["claude", "ai", "fun", "whip", "tray", "desktop"],
+  "license": "MIT",
+  "bin": {
+    "whipclaude": "bin/whipclaude.js"
+  },
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js"
+  },
+  "files": [
+    "bin/",
+    "scripts/",
+    "src/",
+    "assets/",
+    "Cargo.toml",
+    "Cargo.lock"
+  ],
+  "engines": {
+    "node": ">=16"
+  }
+}

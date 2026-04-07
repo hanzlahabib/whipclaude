@@ -1,0 +1,116 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            artifact: whipclaude-linux-x64
+
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            artifact: whipclaude-win32-x64.exe
+
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            artifact: whipclaude-darwin-x64
+
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            artifact: whipclaude-darwin-arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Linux dependencies
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev \
+            libgtk-3-dev \
+            libxdo-dev \
+            libappindicator3-dev \
+            pkg-config \
+            clang-18
+          sudo ln -sf /usr/bin/clang-18 /usr/local/bin/clang
+          sudo ln -sf /usr/bin/clang++-18 /usr/local/bin/clang++
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Rename binary (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          cp target/${{ matrix.target }}/release/whipclaude ${{ matrix.artifact }}
+
+      - name: Rename binary (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          copy target\${{ matrix.target }}\release\whipclaude.exe ${{ matrix.artifact }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
+          body: |
+            ## Install
+
+            ```bash
+            npm install -g whipclaude
+            ```
+
+            No Rust required — postinstall downloads the right binary automatically.
+
+            ## Manual download
+            | Platform | File |
+            |----------|------|
+            | Linux x64 | `whipclaude-linux-x64` |
+            | Windows x64 | `whipclaude-win32-x64.exe` |
+            | macOS Intel | `whipclaude-darwin-x64` |
+            | macOS Apple Silicon | `whipclaude-darwin-arm64` |

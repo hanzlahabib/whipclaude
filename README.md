@@ -7,21 +7,19 @@ npm install -g whipclaude
 whipclaude
 ```
 
-No Rust required — the right prebuilt binary downloads automatically.
-
----
+No Rust required. The right prebuilt binary downloads automatically.
 
 ## Features
 
-- **Verlet physics whip** — realistic rope simulation with Catmull-Rom rendering
-- **Crack detection** — tip velocity threshold triggers sounds and phrases
-- **Combo system** — consecutive cracks escalate sounds, colors, and insults
-- **Mercy mode** — after 10 cracks in 30s, Claude unionizes for 10 seconds
-- **Crack flash** — yellow burst at tip on each crack
-- **Daily counter** — tracks how many times you've disciplined Claude today
-- **Mouse passthrough** — transparent overlay, click right through when idle
-- **Keyboard macro** — injects a snarky phrase into your active text field on crack
-- **System tray** — right-click to spawn/quit (native Windows/macOS)
+- **Verlet physics whip** - realistic rope simulation with Catmull-Rom rendering
+- **Crack detection** - tip velocity threshold triggers sounds and phrases
+- **Combo system** - consecutive cracks escalate sounds, colors, and insults
+- **Mercy mode** - after 10 cracks in 30s, Claude unionizes for 10 seconds
+- **Crack flash** - yellow burst at tip on each crack
+- **Daily counter** - tracks how many times you've disciplined Claude today
+- **Mouse passthrough** - transparent overlay, click right through when idle
+- **Keyboard macro** - injects a snarky phrase into your active text field on crack
+- **System tray** - right-click to spawn/quit (native Windows/macOS)
 
 ## Platform Support
 

@@ -25,10 +25,10 @@ No Rust required. The right prebuilt binary downloads automatically.
 
 | Platform | Status |
 |----------|--------|
-| Windows 10/11 (native) | ✅ Full support |
-| macOS (Intel + Apple Silicon) | ✅ Full support |
-| Linux (X11/Wayland) | ✅ Full support |
-| WSL2 | ⚠️ Sounds/tray limited |
+| Windows 10/11 (native) | Full support |
+| macOS (Intel + Apple Silicon) | Full support |
+| Linux (X11/Wayland) | Full support |
+| WSL2 | Sounds/tray limited |
 
 ## Install
 

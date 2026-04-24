@@ -9,8 +9,10 @@ use egui::epaint::CubicBezierShape;
 use tray_icon::{TrayIconBuilder, TrayIconEvent};
 use tray_icon::menu::{Menu, MenuItem, MenuEvent};
 use enigo::{Enigo, Key, Keyboard, Direction, Settings};
-use std::time::{Duration, Instant};
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use rand::seq::IndexedRandom;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, OnceLock, atomic::{AtomicBool, Ordering}};
+use std::sync::mpsc;
 
 use physics::WhipPhysics;
 use audio::{AudioPlayer, SoundCategory};
@@ -196,17 +198,24 @@ fn draw_mercy(painter: &egui::Painter, screen: egui::Rect, alpha: f32) {
 }
 
 
-// Mutex ensures concurrent cracks don't spawn overlapping Enigo instances
-static TYPING_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+// Single dedicated typing thread; cracks queue phrases instead of spawning
+// a new thread + Enigo instance per event.
+static TYPING_TX: OnceLock<mpsc::Sender<String>> = OnceLock::new();
 
 fn send_macro(phrase: String) {
-    std::thread::spawn(move || {
-        let _guard = TYPING_LOCK.lock().unwrap();
-        std::thread::sleep(Duration::from_millis(80));
-        let Ok(mut e) = Enigo::new(&Settings::default()) else { return };
-        let _ = e.text(&phrase);
-        let _ = e.key(Key::Return, Direction::Click);
+    let tx = TYPING_TX.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            for p in rx {
+                std::thread::sleep(Duration::from_millis(80));
+                let Ok(mut e) = Enigo::new(&Settings::default()) else { continue };
+                let _ = e.text(&p);
+                let _ = e.key(Key::Return, Direction::Click);
+            }
+        });
+        tx
     });
+    let _ = tx.send(phrase);
 }
 
 // ── App state ─────────────────────────────────────────────────────────────────
@@ -233,15 +242,20 @@ struct WhipClaudeApp {
     cracks_in_window: u32,
     window_start:   Instant,
 
-    // daily counter
+    // daily counter — keyed by UTC day number so it resets at an actual day boundary
     daily_cracks:   u32,
-    day_start:      Instant,
-
-    // total cracks (all time this session)
-    total_cracks:   u32,
+    day_index:      u64,
 
     spawn_requested: bool,
     first_frame:    bool,
+    quit_next_frame: bool,  // deferred quit: restore mouse passthrough first
+    last_passthrough: Option<bool>, // cache to avoid per-frame viewport commands
+}
+
+fn current_day_index() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() / 86400)
+        .unwrap_or(0)
 }
 
 impl WhipClaudeApp {
@@ -274,13 +288,20 @@ impl WhipClaudeApp {
 
         // Dedicated thread: blocking recv on MenuEvent (only this thread reads it)
         let flag_respawn = Arc::new(AtomicBool::new(false));
+        let flag_quit = Arc::new(AtomicBool::new(false));
         let fr = flag_respawn.clone();
+        let fq = flag_quit.clone();
         let ctx_for_menu = shared_ctx.clone();
         std::thread::spawn(move || {
             loop {
                 if let Ok(event) = MenuEvent::receiver().recv() {
                     if event.id() == &quit_id_thread {
-                        std::process::exit(0); // quit immediately, no update() needed
+                        fq.store(true, Ordering::Relaxed);
+                        if let Ok(guard) = ctx_for_menu.lock() {
+                            if let Some(ctx) = guard.as_ref() {
+                                ctx.request_repaint();
+                            }
+                        }
                     } else if event.id() == &respawn_id_thread {
                         fr.store(true, Ordering::Relaxed);
                         // Wake up the update loop so it sees the flag immediately
@@ -296,7 +317,6 @@ impl WhipClaudeApp {
 
         // Dedicated thread for tray icon left-click
         let flag_tray_click = Arc::new(AtomicBool::new(false));
-        let flag_quit = Arc::new(AtomicBool::new(false)); // kept for struct compat
         let ftc = flag_tray_click.clone();
         let ctx_for_tray = shared_ctx.clone();
         std::thread::spawn(move || {
@@ -333,24 +353,35 @@ impl WhipClaudeApp {
             cracks_in_window: 0,
             window_start: Instant::now(),
             daily_cracks: 0,
-            day_start: Instant::now(),
-            total_cracks: 0,
+            day_index: current_day_index(),
             spawn_requested: true,  // auto-spawn on launch
             first_frame: true,
+            quit_next_frame: false,
+            last_passthrough: None,
         }
+    }
+
+    /// Restore mouse passthrough, then exit on the next frame.
+    /// This prevents the OS mouse grab from getting stuck when quitting
+    /// while the whip (passthrough=OFF) is active.
+    fn begin_quit(&mut self, ctx: &egui::Context) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(true));
+        self.last_passthrough = Some(true);
+        self.quit_next_frame = true;
+        ctx.request_repaint();
     }
 
     fn on_crack(&mut self, tip_pos: egui::Pos2) {
         let now = Instant::now();
 
-        // Reset daily counter at midnight (approximate: 24h since start)
-        if now.duration_since(self.day_start) > Duration::from_secs(86400) {
+        // Reset daily counter at actual UTC day boundary
+        let today = current_day_index();
+        if today != self.day_index {
             self.daily_cracks = 0;
-            self.day_start = now;
+            self.day_index = today;
         }
 
-        self.daily_cracks  += 1;
-        self.total_cracks  += 1;
+        self.daily_cracks += 1;
 
         // Mercy mode: track cracks in rolling window
         if now.duration_since(self.window_start).as_secs_f32() > MERCY_WINDOW_SECS {
@@ -364,8 +395,8 @@ impl WhipClaudeApp {
             self.mercy_start  = Some(now);
             self.cracks_in_window = 0;
             self.audio.play_from(SoundCategory::WhipOnly);
-            let idx = (rand::random::<u32>() as usize) % MERCY_PHRASES.len();
-            send_macro(MERCY_PHRASES[idx].to_string());
+            let phrase = MERCY_PHRASES.choose(&mut rand::rng()).copied().unwrap_or("");
+            send_macro(phrase.to_string());
             return;
         }
 
@@ -385,10 +416,13 @@ impl WhipClaudeApp {
 
         self.audio.play_from(SoundCategory::WhipOnly);
 
-        // Pick phrase (louder/caps at high combo)
-        let idx = (rand::random::<u32>() as usize) % PHRASES.len();
-        let phrase = PHRASES[idx].to_string();
-        let phrase = if self.combo >= 5 { phrase.to_uppercase() + "!!!" } else { phrase };
+        // Pick phrase (extra emphasis at high combo — phrases are already uppercase)
+        let picked = PHRASES.choose(&mut rand::rng()).copied().unwrap_or("");
+        let phrase = if self.combo >= 5 {
+            format!("{}!!!", picked)
+        } else {
+            picked.to_string()
+        };
         send_macro(phrase);
     }
 }
@@ -403,29 +437,37 @@ impl eframe::App for WhipClaudeApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let now = Instant::now();
 
-        // ── First frame: share egui context with listener threads + maximize ───
+        // ── First frame: share egui context with listener threads ───
+        // Maximize is already set via ViewportBuilder::with_maximized at startup.
         if self.first_frame {
             if let Ok(mut guard) = self.shared_ctx.lock() {
                 *guard = Some(ctx.clone());
             }
-            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
             self.first_frame = false;
+        }
+
+        // ── Deferred quit: passthrough was restored last frame, now safe to exit
+        if self.quit_next_frame {
+            std::process::exit(0);
         }
 
         // ── Window close request (taskbar right-click → Close, OS shutdown) ────
         if ctx.input(|i| i.viewport().close_requested()) {
-            std::process::exit(0);
+            self.begin_quit(ctx);
+            return;
         }
 
         // ── ESC to quit (works while whip is active / passthrough OFF) ────────
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            std::process::exit(0);
+            self.begin_quit(ctx);
+            return;
         }
 
         // ── Tray / menu events (set by dedicated listener threads) ───────────
         // AtomicBool flags set by dedicated listener threads (reliable cross-thread delivery)
         if self.flag_quit.swap(false, Ordering::Relaxed) {
-            std::process::exit(0);
+            self.begin_quit(ctx);
+            return;
         }
         if self.flag_respawn.swap(false, Ordering::Relaxed) {
             self.whip = None;
@@ -450,7 +492,8 @@ impl eframe::App for WhipClaudeApp {
 
         // Middle-click anywhere = quit
         if middle_clicked {
-            std::process::exit(0);
+            self.begin_quit(ctx);
+            return;
         }
 
         // ── Mercy mode timer (10 seconds of shame) ────────────────────────────
@@ -493,9 +536,13 @@ impl eframe::App for WhipClaudeApp {
         }
 
         // Passthrough: OFF while whip is active (so we can track mouse),
-        // ON when idle (so user can click on their other windows)
+        // ON when idle (so user can click on their other windows).
+        // Only emit the viewport command when the state actually changes.
         let idle = self.whip.is_none() && !self.mercy_active;
-        ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(idle));
+        if self.last_passthrough != Some(idle) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(idle));
+            self.last_passthrough = Some(idle);
+        }
 
         // ── Render ────────────────────────────────────────────────────────────
         let painter = ctx.layer_painter(egui::LayerId::new(
@@ -512,15 +559,17 @@ impl eframe::App for WhipClaudeApp {
             }
         }
 
-        // Idle hint (shown when whip has dropped and passthrough is ON)
+        // Idle hint (shown when whip has dropped and passthrough is ON).
+        // Note: ESC to quit only works while the whip is active — when passthrough
+        // is ON, egui never receives keyboard input. The hint reflects that.
         if idle && !self.mercy_active {
             let hint = if self.daily_cracks > 0 {
                 format!(
-                    "⚡ {} cracks today  |  Crack whip → roasts Claude  |  right-click tray → Respawn / Quit",
+                    "⚡ {} cracks today  |  Crack whip → roasts Claude  |  tray → Respawn / Quit",
                     self.daily_cracks
                 )
             } else {
-                "⚡ WhipClaude  |  Crack the whip to yell at Claude  |  right-click tray → Respawn / Quit".to_string()
+                "⚡ WhipClaude  |  Crack the whip to yell at Claude  |  tray → Respawn / Quit".to_string()
             };
             painter.text(
                 egui::pos2(screen.center().x, screen.bottom() - 24.0),
@@ -564,7 +613,18 @@ impl eframe::App for WhipClaudeApp {
             );
         }
 
-        ctx.request_repaint();
+        // Only keep repainting while something is actually animating.
+        // When fully idle (no whip, no mercy, no flash) we stop driving the
+        // render loop — listener threads wake us up via request_repaint().
+        let animating = self.whip.is_some()
+            || self.mercy_active
+            || self.flash_start.is_some();
+        if animating {
+            ctx.request_repaint();
+        } else {
+            // Check the idle tray flags on a slow tick as a safety net
+            ctx.request_repaint_after(Duration::from_millis(250));
+        }
     }
 }
 
@@ -573,11 +633,16 @@ impl eframe::App for WhipClaudeApp {
 #[cfg(target_os = "windows")]
 fn force_hide_from_taskbar() {
     std::thread::spawn(|| {
-        std::thread::sleep(std::time::Duration::from_millis(400));
         unsafe {
             use winapi::um::winuser::*;
             let title: Vec<u16> = "WhipClaude\0".encode_utf16().collect();
-            let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+            // Poll for the window — startup timing varies across machines.
+            let mut hwnd = std::ptr::null_mut();
+            for _ in 0..40 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+                if !hwnd.is_null() { break; }
+            }
             if hwnd.is_null() { return; }
             let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
             // WS_EX_TOOLWINDOW hides from taskbar; remove WS_EX_APPWINDOW which forces it back
@@ -627,15 +692,15 @@ fn cli_crack(phrase: Option<String>, delay_secs: u64) {
         eprintln!("\r💥 CRACK!                                           ");
     }
 
-    // Play whip sound (blocks until done so process doesn't exit early)
-    std::thread::spawn(audio::play_crack_sync);
+    // Play whip sound in parallel with typing; join the handle at the end
+    // so we never truncate long samples.
+    let audio_handle = std::thread::spawn(audio::play_crack_sync);
 
     // Small gap so enigo types into the now-focused window
     std::thread::sleep(Duration::from_millis(150));
 
     let text = phrase.unwrap_or_else(|| {
-        let idx = (rand::random::<u32>() as usize) % PHRASES.len();
-        PHRASES[idx].to_string()
+        PHRASES.choose(&mut rand::rng()).copied().unwrap_or("").to_string()
     });
 
     if let Ok(mut e) = Enigo::new(&Settings::default()) {
@@ -643,14 +708,16 @@ fn cli_crack(phrase: Option<String>, delay_secs: u64) {
         let _ = e.key(Key::Return, Direction::Click);
     }
 
-    // Give audio thread time to finish
-    std::thread::sleep(Duration::from_millis(1200));
+    // Wait for audio to finish playing before exiting
+    let _ = audio_handle.join();
 }
 
 // Returns the listener that must be kept alive for the duration of the process.
-// If binding fails, another instance is already running.
-fn try_single_instance() -> Option<std::net::TcpListener> {
-    std::net::TcpListener::bind("127.0.0.1:57432").ok()
+// Binding to a fixed loopback port is a best-effort single-instance check —
+// if the port is held by an unrelated process this will also fail, so we
+// surface the error on stderr instead of silently exiting.
+fn try_single_instance() -> Result<std::net::TcpListener, std::io::Error> {
+    std::net::TcpListener::bind("127.0.0.1:57432")
 }
 
 fn main() {
@@ -663,9 +730,14 @@ fn main() {
 
     if want_gui {
         let _lock = match try_single_instance() {
-            Some(l) => l,
-            None => {
-                // Another instance is running — tray icon controls it, just exit.
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!(
+                    "WhipClaude: could not acquire single-instance lock on 127.0.0.1:57432 ({}).\n\
+                     Another WhipClaude instance may already be running — look for the tray icon.\n\
+                     If no other instance is running, port 57432 is held by an unrelated process.",
+                    e
+                );
                 return;
             }
         };

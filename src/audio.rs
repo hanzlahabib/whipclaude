@@ -1,6 +1,7 @@
 use rodio::{Decoder, OutputStream, Sink};
 use std::io::Cursor;
 use std::sync::mpsc;
+use rand::seq::IndexedRandom;
 
 // ── Sound banks (baked into binary) ──────────────────────────────────────────
 
@@ -23,10 +24,8 @@ pub enum SoundCategory {
 // ── Synchronous one-shot play for CLI mode ────────────────────────────────────
 
 pub fn play_crack_sync() {
-    let bank = WHIP_SOUNDS;
-    if bank.is_empty() { return; }
-    let idx = (rand::random::<u32>() as usize) % bank.len();
-    let data = bank[idx].to_vec();
+    let Some(&sample) = WHIP_SOUNDS.choose(&mut rand::rng()) else { return };
+    let data = sample.to_vec();
 
     let Ok((_stream, handle)) = OutputStream::try_default() else { return };
     let Ok(sink) = Sink::try_new(&handle) else { return };
@@ -40,15 +39,14 @@ pub fn play_crack_sync() {
 // ── Player — keeps a persistent audio thread so OutputStream stays alive ──────
 
 pub struct AudioPlayer {
-    sender: mpsc::Sender<Vec<u8>>,
+    sender: mpsc::Sender<&'static [u8]>,
 }
 
 impl AudioPlayer {
     pub fn new() -> Self {
-        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        let (tx, rx) = mpsc::channel::<&'static [u8]>();
 
         std::thread::spawn(move || {
-            // Keep OutputStream alive for the entire app lifetime
             let Ok((_stream, handle)) = OutputStream::try_default() else {
                 return;
             };
@@ -59,7 +57,7 @@ impl AudioPlayer {
                 let cursor = Cursor::new(data);
                 let Ok(dec) = Decoder::new(cursor) else { continue };
                 sink.append(dec);
-                sink.detach(); // play without blocking the channel
+                sink.detach();
             }
         });
 
@@ -68,10 +66,9 @@ impl AudioPlayer {
 
     pub fn play_from(&self, category: SoundCategory) {
         let bank = Self::bank_for(category);
-        if bank.is_empty() { return; }
-        let idx = (rand::random::<u32>() as usize) % bank.len();
-        let data = bank[idx].to_vec();
-        let _ = self.sender.send(data);
+        if let Some(&sample) = bank.choose(&mut rand::rng()) {
+            let _ = self.sender.send(sample);
+        }
     }
 
     fn bank_for(_category: SoundCategory) -> &'static [&'static [u8]] {

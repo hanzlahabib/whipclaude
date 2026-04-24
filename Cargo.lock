@@ -3846,6 +3846,7 @@ dependencies = [
  "rand",
  "rodio",
  "tray-icon",
+ "winapi",
 ]
 
 [[package]]

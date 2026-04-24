@@ -375,8 +375,7 @@ impl eframe::App for WhipClaudeApp {
         // ── Menu events ───────────────────────────────────────────────────────
         if let Ok(event) = MenuEvent::receiver().try_recv() {
             if event.id() == &self.quit_id {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                return;
+                std::process::exit(0);
             }
             if event.id() == &self.respawn_id {
                 // Drop current whip and spawn a new one
@@ -396,8 +395,7 @@ impl eframe::App for WhipClaudeApp {
 
         // Middle-click anywhere = quit
         if middle_clicked {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            return;
+            std::process::exit(0);
         }
 
         // ── Mercy mode timer (10 seconds of shame) ────────────────────────────

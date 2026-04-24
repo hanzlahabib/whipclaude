@@ -464,13 +464,14 @@ impl eframe::App for WhipClaudeApp {
         }
 
         // ── Spawn whip ────────────────────────────────────────────────────────
+        let just_spawned = self.spawn_requested;
         if self.spawn_requested {
             self.whip = Some(WhipPhysics::new(mouse_pos.x, mouse_pos.y));
             self.spawn_requested = false;
         }
 
-        // ── Click to drop ─────────────────────────────────────────────────────
-        if clicked {
+        // ── Click to drop (skip on spawn frame to avoid stray tray-click events)
+        if clicked && !just_spawned {
             if let Some(ref mut w) = self.whip {
                 if !w.dropping { w.dropping = true; }
             }

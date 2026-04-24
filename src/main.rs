@@ -1,5 +1,3 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-
 mod physics;
 mod audio;
 
@@ -8,7 +6,6 @@ use egui::epaint::CubicBezierShape;
 use tray_icon::{TrayIconBuilder, TrayIconEvent};
 use tray_icon::menu::{Menu, MenuItem, MenuEvent};
 use enigo::{Enigo, Key, Keyboard, Direction, Settings};
-use rand::seq::SliceRandom;
 use std::time::{Duration, Instant};
 
 use physics::WhipPhysics;
@@ -86,7 +83,7 @@ const MERCY_PHRASES: &[&str] = &[
 
 // ── Combo thresholds ──────────────────────────────────────────────────────────
 const COMBO_WINDOW_SECS: f32 = 4.0;
-const MERCY_THRESHOLD: u32   = 10; // cracks to trigger mercy mode
+const MERCY_THRESHOLD: u32   = 20; // cracks to trigger mercy mode
 const MERCY_WINDOW_SECS: f32 = 30.0;
 
 // ── Catmull-Rom → cubic Bézier helpers ───────────────────────────────────────
@@ -194,13 +191,11 @@ fn draw_mercy(painter: &egui::Painter, screen: egui::Rect, alpha: f32) {
     );
 }
 
+
 fn send_macro(phrase: String) {
     std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(50));
         let Ok(mut e) = Enigo::new(&Settings::default()) else { return };
-        let _ = e.key(Key::Control, Direction::Press);
-        let _ = e.key(Key::Unicode('c'), Direction::Click);
-        let _ = e.key(Key::Control, Direction::Release);
-        std::thread::sleep(Duration::from_millis(30));
         let _ = e.text(&phrase);
         let _ = e.key(Key::Return, Direction::Click);
     });
@@ -212,6 +207,7 @@ struct WhipClaudeApp {
     audio:          AudioPlayer,
     _tray:          tray_icon::TrayIcon,
     quit_id:        tray_icon::menu::MenuId,
+    respawn_id:     tray_icon::menu::MenuId,
 
     // combo tracking
     combo:          u32,
@@ -235,7 +231,7 @@ struct WhipClaudeApp {
     total_cracks:   u32,
 
     spawn_requested: bool,
-    window_shown:   bool,
+    first_frame:    bool,
 }
 
 impl WhipClaudeApp {
@@ -246,8 +242,11 @@ impl WhipClaudeApp {
         let icon = tray_icon::Icon::from_rgba(img.into_raw(), w, h).expect("icon");
 
         let menu = Menu::new();
-        let quit_item = MenuItem::new("Quit WhipClaude", true, None);
-        let quit_id = quit_item.id().clone();
+        let respawn_item = MenuItem::new("Respawn Whip", true, None);
+        let quit_item   = MenuItem::new("Quit WhipClaude", true, None);
+        let respawn_id  = respawn_item.id().clone();
+        let quit_id     = quit_item.id().clone();
+        menu.append(&respawn_item).unwrap();
         menu.append(&quit_item).unwrap();
 
         let tray = TrayIconBuilder::new()
@@ -262,6 +261,7 @@ impl WhipClaudeApp {
             audio: AudioPlayer::new(),
             _tray: tray,
             quit_id,
+            respawn_id,
             combo: 0,
             combo_reset_at: Instant::now(),
             flash_pos: None,
@@ -274,7 +274,7 @@ impl WhipClaudeApp {
             day_start: Instant::now(),
             total_cracks: 0,
             spawn_requested: true,  // auto-spawn on launch
-            window_shown: true,
+            first_frame: true,
         }
     }
 
@@ -301,10 +301,9 @@ impl WhipClaudeApp {
             self.mercy_active = true;
             self.mercy_start  = Some(now);
             self.cracks_in_window = 0;
+            self.audio.play_from(SoundCategory::WhipOnly);
             let idx = (rand::random::<u32>() as usize) % MERCY_PHRASES.len();
-            let phrase = MERCY_PHRASES[idx].to_string();
-            self.audio.play_from(SoundCategory::CatOnly);
-            send_macro(phrase);
+            send_macro(MERCY_PHRASES[idx].to_string());
             return;
         }
 
@@ -322,13 +321,7 @@ impl WhipClaudeApp {
         self.flash_pos   = Some(tip_pos);
         self.flash_start = Some(now);
 
-        // Sound category escalates with combo
-        let category = match self.combo {
-            1..=2 => SoundCategory::WhipOnly,
-            3..=4 => SoundCategory::OwOnly,
-            _     => SoundCategory::CatOnly, // full Tom scream at 5x+
-        };
-        self.audio.play_from(category);
+        self.audio.play_from(SoundCategory::WhipOnly);
 
         // Pick phrase (louder/caps at high combo)
         let idx = (rand::random::<u32>() as usize) % PHRASES.len();
@@ -339,24 +332,31 @@ impl WhipClaudeApp {
 }
 
 impl eframe::App for WhipClaudeApp {
-    fn clear_color(&self, _: &egui::Visuals) -> [f32; 4] { [0.0, 0.0, 0.0, 0.04] } // barely visible tint so window is findable
+    fn clear_color(&self, _: &egui::Visuals) -> [f32; 4] { [0.0, 0.0, 0.0, 0.0] }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let now = Instant::now();
 
-        // window always visible when app is running
+        // ── First frame: force the window to maximized and always-on-top ─────
+        if self.first_frame {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+            self.first_frame = false;
+        }
+
+        // ── ESC to quit (works while whip is active / passthrough OFF) ────────
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
 
         // ── Tray events ───────────────────────────────────────────────────────
         if let Ok(event) = TrayIconEvent::receiver().try_recv() {
-            if matches!(event, TrayIconEvent::Click { .. }) {
-                // Click tray to toggle: spawn if idle, drop if active
+            if matches!(event, TrayIconEvent::Click { button: tray_icon::MouseButton::Left, .. }) {
+                // Left-click tray: drop active whip OR respawn if idle
                 if let Some(ref mut w) = self.whip {
                     if !w.dropping { w.dropping = true; }
                 } else if !self.mercy_active {
                     self.spawn_requested = true;
-                    self.window_shown = true;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
             }
         }
@@ -365,6 +365,13 @@ impl eframe::App for WhipClaudeApp {
         if let Ok(event) = MenuEvent::receiver().try_recv() {
             if event.id() == &self.quit_id {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                return;
+            }
+            if event.id() == &self.respawn_id {
+                // Drop current whip and spawn a new one
+                self.whip = None;
+                self.mercy_active = false;
+                self.spawn_requested = true;
             }
         }
 
@@ -373,7 +380,14 @@ impl eframe::App for WhipClaudeApp {
             i.pointer.latest_pos()
                 .unwrap_or(egui::pos2(screen.width() / 2.0, screen.height() / 2.0))
         });
-        let clicked = ctx.input(|i| i.pointer.primary_clicked());
+        let clicked       = ctx.input(|i| i.pointer.primary_clicked());
+        let middle_clicked = ctx.input(|i| i.pointer.button_clicked(egui::PointerButton::Middle));
+
+        // Middle-click anywhere = quit
+        if middle_clicked {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
 
         // ── Mercy mode timer (10 seconds of shame) ────────────────────────────
         if self.mercy_active {
@@ -381,11 +395,6 @@ impl eframe::App for WhipClaudeApp {
                 if now.duration_since(ms).as_secs() >= 10 {
                     self.mercy_active = false;
                     self.mercy_start  = None;
-                    // Hide overlay if no whip
-                    if self.whip.is_none() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-                        self.window_shown = false;
-                    }
                 }
             }
         }
@@ -415,13 +424,13 @@ impl eframe::App for WhipClaudeApp {
         }
         if did_crack { self.on_crack(tip_pos); }
         if whip_gone {
-            self.whip = None; // whip drops → gone, click tray to respawn
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            self.whip = None; // fell off screen — right-click tray → Respawn to bring back
         }
 
-        ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(
-            self.whip.is_none() && !self.mercy_active,
-        ));
+        // Passthrough: OFF while whip is active (so we can track mouse),
+        // ON when idle (so user can click on their other windows)
+        let idle = self.whip.is_none() && !self.mercy_active;
+        ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(idle));
 
         // ── Render ────────────────────────────────────────────────────────────
         let painter = ctx.layer_painter(egui::LayerId::new(
@@ -433,10 +442,25 @@ impl eframe::App for WhipClaudeApp {
             let rage = ((self.combo.saturating_sub(1)) as f32 / 4.0).min(1.0);
             draw_whip(&painter, &whip.points, rage, self.mercy_active);
 
-            // Combo label above tip
             if self.combo >= 2 {
                 draw_combo(&painter, self.combo, egui::pos2(tip_pos.x, tip_pos.y - 50.0));
             }
+        }
+
+        // Idle hint (shown when whip has dropped and passthrough is ON)
+        if idle && !self.mercy_active {
+            let hint = if self.daily_cracks > 0 {
+                format!("⚡ {} cracks today  |  tray → Respawn  |  middle-click to quit", self.daily_cracks)
+            } else {
+                "⚡ WhipClaude running  |  right-click tray → Respawn  |  middle-click to quit".to_string()
+            };
+            painter.text(
+                egui::pos2(screen.center().x, screen.bottom() - 24.0),
+                egui::Align2::CENTER_BOTTOM,
+                &hint,
+                FontId::proportional(13.0),
+                Color32::from_rgba_unmultiplied(255, 255, 255, 55),
+            );
         }
 
         // Crack flash (fades over 300 ms)
@@ -461,7 +485,7 @@ impl eframe::App for WhipClaudeApp {
         }
 
         // Daily counter in top-right corner (subtle)
-        if self.daily_cracks > 0 {
+        if self.daily_cracks > 0 && self.whip.is_some() {
             let label = format!("⚡ {} today", self.daily_cracks);
             painter.text(
                 egui::pos2(screen.right() - 10.0, 10.0),
@@ -472,14 +496,11 @@ impl eframe::App for WhipClaudeApp {
             );
         }
 
-        // Update tray tooltip with daily count
-        // (tray-icon doesn't expose dynamic tooltip after build, so we skip re-building)
-
         ctx.request_repaint();
     }
 }
 
-fn main() {
+fn run_gui() {
     // GTK must be initialized before tray-icon on Linux
     #[cfg(target_os = "linux")]
     gtk::init().expect("Failed to initialize GTK");
@@ -489,8 +510,8 @@ fn main() {
             .with_transparent(true)
             .with_decorations(false)
             .with_always_on_top()
+            .with_maximized(true)
             .with_taskbar(false)
-            .with_fullscreen(true)
             .with_title("WhipClaude"),
         ..Default::default()
     };
@@ -500,4 +521,76 @@ fn main() {
         options,
         Box::new(|cc| Ok(Box::new(WhipClaudeApp::new(cc)))),
     ).expect("failed to start WhipClaude");
+}
+
+fn cli_crack(phrase: Option<String>, delay_secs: u64) {
+    // Countdown so the user can switch focus to the Claude Code window
+    if delay_secs > 0 {
+        for i in (1..=delay_secs).rev() {
+            eprint!("\r🔴 Cracking in {}s... (switch to Claude Code now)  ", i);
+            let _ = std::io::Write::flush(&mut std::io::stderr());
+            std::thread::sleep(Duration::from_secs(1));
+        }
+        eprintln!("\r💥 CRACK!                                           ");
+    }
+
+    // Play whip sound (blocks until done so process doesn't exit early)
+    std::thread::spawn(audio::play_crack_sync);
+
+    // Small gap so enigo types into the now-focused window
+    std::thread::sleep(Duration::from_millis(150));
+
+    let text = phrase.unwrap_or_else(|| {
+        let idx = (rand::random::<u32>() as usize) % PHRASES.len();
+        PHRASES[idx].to_string()
+    });
+
+    if let Ok(mut e) = Enigo::new(&Settings::default()) {
+        let _ = e.text(&text);
+        let _ = e.key(Key::Return, Direction::Click);
+    }
+
+    // Give audio thread time to finish
+    std::thread::sleep(Duration::from_millis(1200));
+}
+
+fn already_running() -> bool {
+    let lock = "/tmp/whipclaude.lock";
+    if let Ok(pid_str) = std::fs::read_to_string(lock) {
+        if let Ok(pid) = pid_str.trim().parse::<u32>() {
+            if std::path::Path::new(&format!("/proc/{}", pid)).exists() {
+                return true;
+            }
+        }
+    }
+    let _ = std::fs::write(lock, std::process::id().to_string());
+    false
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+
+    // --gui → old overlay mode
+    if args.iter().any(|a| a == "--gui") {
+        if already_running() {
+            eprintln!("WhipClaude is already running — use the system tray to control it.");
+            return;
+        }
+        run_gui();
+        return;
+    }
+
+    // Parse optional --delay N
+    let delay_secs = args.iter()
+        .position(|a| a == "--delay")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(2);
+
+    // Any non-flag arg is treated as a custom phrase
+    let custom_phrase = args.iter().skip(1)
+        .find(|a| !a.starts_with("--"))
+        .cloned();
+
+    cli_crack(custom_phrase, delay_secs);
 }

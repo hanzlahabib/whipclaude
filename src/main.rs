@@ -1,3 +1,6 @@
+// Prevent console window on Windows when launched by double-click
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 mod physics;
 mod audio;
 
@@ -334,6 +337,10 @@ impl WhipClaudeApp {
 impl eframe::App for WhipClaudeApp {
     fn clear_color(&self, _: &egui::Visuals) -> [f32; 4] { [0.0, 0.0, 0.0, 0.0] }
 
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        std::process::exit(0);
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let now = Instant::now();
 
@@ -554,28 +561,28 @@ fn cli_crack(phrase: Option<String>, delay_secs: u64) {
     std::thread::sleep(Duration::from_millis(1200));
 }
 
-fn already_running() -> bool {
-    let lock = "/tmp/whipclaude.lock";
-    if let Ok(pid_str) = std::fs::read_to_string(lock) {
-        if let Ok(pid) = pid_str.trim().parse::<u32>() {
-            if std::path::Path::new(&format!("/proc/{}", pid)).exists() {
-                return true;
-            }
-        }
-    }
-    let _ = std::fs::write(lock, std::process::id().to_string());
-    false
+// Returns the listener that must be kept alive for the duration of the process.
+// If binding fails, another instance is already running.
+fn try_single_instance() -> Option<std::net::TcpListener> {
+    std::net::TcpListener::bind("127.0.0.1:57432").ok()
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
-    // --gui → old overlay mode
-    if args.iter().any(|a| a == "--gui") {
-        if already_running() {
-            eprintln!("WhipClaude is already running — use the system tray to control it.");
-            return;
-        }
+    // On Windows, double-clicking the exe passes no extra args → start GUI directly.
+    // On Linux, no args → CLI crack mode (backward compatible).
+    let want_gui = args.iter().any(|a| a == "--gui")
+        || (cfg!(target_os = "windows") && args.len() == 1);
+
+    if want_gui {
+        let _lock = match try_single_instance() {
+            Some(l) => l,
+            None => {
+                // Another instance is running — tray icon controls it, just exit.
+                return;
+            }
+        };
         run_gui();
         return;
     }

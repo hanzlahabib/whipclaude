@@ -10,6 +10,7 @@ use tray_icon::{TrayIconBuilder, TrayIconEvent};
 use tray_icon::menu::{Menu, MenuItem, MenuEvent};
 use enigo::{Enigo, Key, Keyboard, Direction, Settings};
 use std::time::{Duration, Instant};
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 
 use physics::WhipPhysics;
 use audio::{AudioPlayer, SoundCategory};
@@ -209,8 +210,9 @@ struct WhipClaudeApp {
     whip:           Option<WhipPhysics>,
     audio:          AudioPlayer,
     _tray:          tray_icon::TrayIcon,
-    quit_id:        tray_icon::menu::MenuId,
-    respawn_id:     tray_icon::menu::MenuId,
+    flag_quit:      Arc<AtomicBool>,
+    flag_respawn:   Arc<AtomicBool>,
+    flag_tray_click: Arc<AtomicBool>,
 
     // combo tracking
     combo:          u32,
@@ -259,12 +261,45 @@ impl WhipClaudeApp {
             .build()
             .expect("tray icon");
 
+        // Dedicated thread: blocking recv so no menu events are ever missed
+        let flag_quit    = Arc::new(AtomicBool::new(false));
+        let flag_respawn = Arc::new(AtomicBool::new(false));
+        let fq = flag_quit.clone();
+        let fr = flag_respawn.clone();
+        std::thread::spawn(move || {
+            loop {
+                if let Ok(event) = MenuEvent::receiver().recv() {
+                    if event.id() == &quit_id {
+                        fq.store(true, Ordering::Relaxed);
+                    } else if event.id() == &respawn_id {
+                        fr.store(true, Ordering::Relaxed);
+                    }
+                }
+            }
+        });
+
+        // Dedicated thread for tray icon left-click
+        let flag_tray_click = Arc::new(AtomicBool::new(false));
+        let ftc = flag_tray_click.clone();
+        std::thread::spawn(move || {
+            loop {
+                if let Ok(event) = TrayIconEvent::receiver().recv() {
+                    if matches!(event, TrayIconEvent::Click {
+                        button: tray_icon::MouseButton::Left, ..
+                    }) {
+                        ftc.store(true, Ordering::Relaxed);
+                    }
+                }
+            }
+        });
+
         Self {
             whip: None,
             audio: AudioPlayer::new(),
             _tray: tray,
-            quit_id,
-            respawn_id,
+            flag_quit,
+            flag_respawn,
+            flag_tray_click,
             combo: 0,
             combo_reset_at: Instant::now(),
             flash_pos: None,
@@ -360,27 +395,19 @@ impl eframe::App for WhipClaudeApp {
             std::process::exit(0);
         }
 
-        // ── Tray events ───────────────────────────────────────────────────────
-        if let Ok(event) = TrayIconEvent::receiver().try_recv() {
-            if matches!(event, TrayIconEvent::Click { button: tray_icon::MouseButton::Left, .. }) {
-                // Left-click tray: drop active whip OR respawn if idle
-                if let Some(ref mut w) = self.whip {
-                    if !w.dropping { w.dropping = true; }
-                } else if !self.mercy_active {
-                    self.spawn_requested = true;
-                }
-            }
+        // ── Tray / menu events (set by dedicated listener threads) ───────────
+        if self.flag_quit.swap(false, Ordering::Relaxed) {
+            std::process::exit(0);
         }
-
-        // ── Menu events ───────────────────────────────────────────────────────
-        if let Ok(event) = MenuEvent::receiver().try_recv() {
-            if event.id() == &self.quit_id {
-                std::process::exit(0);
-            }
-            if event.id() == &self.respawn_id {
-                // Drop current whip and spawn a new one
-                self.whip = None;
-                self.mercy_active = false;
+        if self.flag_respawn.swap(false, Ordering::Relaxed) {
+            self.whip = None;
+            self.mercy_active = false;
+            self.spawn_requested = true;
+        }
+        if self.flag_tray_click.swap(false, Ordering::Relaxed) {
+            if let Some(ref mut w) = self.whip {
+                if !w.dropping { w.dropping = true; }
+            } else if !self.mercy_active {
                 self.spawn_requested = true;
             }
         }

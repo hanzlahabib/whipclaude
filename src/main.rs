@@ -214,11 +214,10 @@ struct WhipClaudeApp {
     whip:           Option<WhipPhysics>,
     audio:          AudioPlayer,
     _tray:          tray_icon::TrayIcon,
-    quit_id:        tray_icon::menu::MenuId,
-    respawn_id:     tray_icon::menu::MenuId,
     flag_quit:      Arc<AtomicBool>,
     flag_respawn:   Arc<AtomicBool>,
     flag_tray_click: Arc<AtomicBool>,
+    shared_ctx:     Arc<std::sync::Mutex<Option<egui::Context>>>,
 
     // combo tracking
     combo:          u32,
@@ -269,18 +268,27 @@ impl WhipClaudeApp {
             .build()
             .expect("tray icon");
 
-        // Dedicated thread: blocking recv so no menu events are ever missed
-        let flag_quit    = Arc::new(AtomicBool::new(false));
+        // Shared egui context — populated on first frame, used to force repaints from threads
+        let shared_ctx: Arc<std::sync::Mutex<Option<egui::Context>>> =
+            Arc::new(std::sync::Mutex::new(None));
+
+        // Dedicated thread: blocking recv on MenuEvent (only this thread reads it)
         let flag_respawn = Arc::new(AtomicBool::new(false));
-        let fq = flag_quit.clone();
         let fr = flag_respawn.clone();
+        let ctx_for_menu = shared_ctx.clone();
         std::thread::spawn(move || {
             loop {
                 if let Ok(event) = MenuEvent::receiver().recv() {
                     if event.id() == &quit_id_thread {
-                        fq.store(true, Ordering::Relaxed);
+                        std::process::exit(0); // quit immediately, no update() needed
                     } else if event.id() == &respawn_id_thread {
                         fr.store(true, Ordering::Relaxed);
+                        // Wake up the update loop so it sees the flag immediately
+                        if let Ok(guard) = ctx_for_menu.lock() {
+                            if let Some(ctx) = guard.as_ref() {
+                                ctx.request_repaint();
+                            }
+                        }
                     }
                 }
             }
@@ -288,7 +296,9 @@ impl WhipClaudeApp {
 
         // Dedicated thread for tray icon left-click
         let flag_tray_click = Arc::new(AtomicBool::new(false));
+        let flag_quit = Arc::new(AtomicBool::new(false)); // kept for struct compat
         let ftc = flag_tray_click.clone();
+        let ctx_for_tray = shared_ctx.clone();
         std::thread::spawn(move || {
             loop {
                 if let Ok(event) = TrayIconEvent::receiver().recv() {
@@ -296,6 +306,11 @@ impl WhipClaudeApp {
                         button: tray_icon::MouseButton::Left, ..
                     }) {
                         ftc.store(true, Ordering::Relaxed);
+                        if let Ok(guard) = ctx_for_tray.lock() {
+                            if let Some(ctx) = guard.as_ref() {
+                                ctx.request_repaint();
+                            }
+                        }
                     }
                 }
             }
@@ -305,11 +320,10 @@ impl WhipClaudeApp {
             whip: None,
             audio: AudioPlayer::new(),
             _tray: tray,
-            quit_id,
-            respawn_id,
             flag_quit,
             flag_respawn,
             flag_tray_click,
+            shared_ctx,
             combo: 0,
             combo_reset_at: Instant::now(),
             flash_pos: None,
@@ -389,8 +403,11 @@ impl eframe::App for WhipClaudeApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let now = Instant::now();
 
-        // ── First frame: force the window to maximized and always-on-top ─────
+        // ── First frame: share egui context with listener threads + maximize ───
         if self.first_frame {
+            if let Ok(mut guard) = self.shared_ctx.lock() {
+                *guard = Some(ctx.clone());
+            }
             ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
             self.first_frame = false;
         }
@@ -419,17 +436,6 @@ impl eframe::App for WhipClaudeApp {
             if let Some(ref mut w) = self.whip {
                 if !w.dropping { w.dropping = true; }
             } else if !self.mercy_active {
-                self.spawn_requested = true;
-            }
-        }
-        // Drain any events that may have arrived directly on this thread
-        while let Ok(event) = MenuEvent::receiver().try_recv() {
-            if event.id() == &self.quit_id {
-                std::process::exit(0);
-            }
-            if event.id() == &self.respawn_id {
-                self.whip = None;
-                self.mercy_active = false;
                 self.spawn_requested = true;
             }
         }

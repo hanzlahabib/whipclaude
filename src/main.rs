@@ -196,19 +196,32 @@ fn draw_mercy(painter: &egui::Painter, screen: egui::Rect, alpha: f32) {
 }
 
 
-fn send_macro(phrase: String) {
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(50));
-        let Ok(mut e) = Enigo::new(&Settings::default()) else { return };
-        let _ = e.text(&phrase);
-        let _ = e.key(Key::Return, Direction::Click);
-    });
+// Single typing thread — serializes all phrases so concurrent cracks don't interleave
+struct MacroQueue {
+    sender: std::sync::mpsc::Sender<String>,
+}
+
+impl MacroQueue {
+    fn new() -> Self {
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            for phrase in rx {
+                std::thread::sleep(Duration::from_millis(80));
+                let Ok(mut e) = Enigo::new(&Settings::default()) else { continue };
+                let _ = e.text(&phrase);
+                let _ = e.key(Key::Return, Direction::Click);
+            }
+        });
+        Self { sender: tx }
+    }
+    fn send(&self, phrase: String) { let _ = self.sender.send(phrase); }
 }
 
 // ── App state ─────────────────────────────────────────────────────────────────
 struct WhipClaudeApp {
     whip:           Option<WhipPhysics>,
     audio:          AudioPlayer,
+    macros:         MacroQueue,
     _tray:          tray_icon::TrayIcon,
     flag_quit:      Arc<AtomicBool>,
     flag_respawn:   Arc<AtomicBool>,
@@ -295,6 +308,7 @@ impl WhipClaudeApp {
 
         Self {
             whip: None,
+            macros: MacroQueue::new(),
             audio: AudioPlayer::new(),
             _tray: tray,
             flag_quit,
@@ -341,7 +355,7 @@ impl WhipClaudeApp {
             self.cracks_in_window = 0;
             self.audio.play_from(SoundCategory::WhipOnly);
             let idx = (rand::random::<u32>() as usize) % MERCY_PHRASES.len();
-            send_macro(MERCY_PHRASES[idx].to_string());
+            self.macros.send(MERCY_PHRASES[idx].to_string());
             return;
         }
 
@@ -365,7 +379,7 @@ impl WhipClaudeApp {
         let idx = (rand::random::<u32>() as usize) % PHRASES.len();
         let phrase = PHRASES[idx].to_string();
         let phrase = if self.combo >= 5 { phrase.to_uppercase() + "!!!" } else { phrase };
-        send_macro(phrase);
+        self.macros.send(phrase);
     }
 }
 
@@ -486,16 +500,19 @@ impl eframe::App for WhipClaudeApp {
         // Idle hint (shown when whip has dropped and passthrough is ON)
         if idle && !self.mercy_active {
             let hint = if self.daily_cracks > 0 {
-                format!("⚡ {} cracks today  |  tray → Respawn  |  middle-click to quit", self.daily_cracks)
+                format!(
+                    "⚡ {} cracks today  |  Crack the whip → types a roast into Claude  |  right-click tray → Respawn / Quit",
+                    self.daily_cracks
+                )
             } else {
-                "⚡ WhipClaude running  |  right-click tray → Respawn  |  middle-click to quit".to_string()
+                "⚡ WhipClaude  |  Crack the whip → types a roast into Claude  |  right-click tray → Respawn / Quit".to_string()
             };
             painter.text(
                 egui::pos2(screen.center().x, screen.bottom() - 24.0),
                 egui::Align2::CENTER_BOTTOM,
                 &hint,
                 FontId::proportional(13.0),
-                Color32::from_rgba_unmultiplied(255, 255, 255, 55),
+                Color32::from_rgba_unmultiplied(255, 255, 255, 70),
             );
         }
 

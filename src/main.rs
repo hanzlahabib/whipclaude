@@ -196,33 +196,26 @@ fn draw_mercy(painter: &egui::Painter, screen: egui::Rect, alpha: f32) {
 }
 
 
-// Single typing thread — serializes all phrases so concurrent cracks don't interleave
-struct MacroQueue {
-    sender: std::sync::mpsc::Sender<String>,
-}
+// Mutex ensures concurrent cracks don't spawn overlapping Enigo instances
+static TYPING_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-impl MacroQueue {
-    fn new() -> Self {
-        let (tx, rx) = std::sync::mpsc::channel::<String>();
-        std::thread::spawn(move || {
-            for phrase in rx {
-                std::thread::sleep(Duration::from_millis(80));
-                let Ok(mut e) = Enigo::new(&Settings::default()) else { continue };
-                let _ = e.text(&phrase);
-                let _ = e.key(Key::Return, Direction::Click);
-            }
-        });
-        Self { sender: tx }
-    }
-    fn send(&self, phrase: String) { let _ = self.sender.send(phrase); }
+fn send_macro(phrase: String) {
+    std::thread::spawn(move || {
+        let _guard = TYPING_LOCK.lock().unwrap();
+        std::thread::sleep(Duration::from_millis(80));
+        let Ok(mut e) = Enigo::new(&Settings::default()) else { return };
+        let _ = e.text(&phrase);
+        let _ = e.key(Key::Return, Direction::Click);
+    });
 }
 
 // ── App state ─────────────────────────────────────────────────────────────────
 struct WhipClaudeApp {
     whip:           Option<WhipPhysics>,
     audio:          AudioPlayer,
-    macros:         MacroQueue,
     _tray:          tray_icon::TrayIcon,
+    quit_id:        tray_icon::menu::MenuId,
+    respawn_id:     tray_icon::menu::MenuId,
     flag_quit:      Arc<AtomicBool>,
     flag_respawn:   Arc<AtomicBool>,
     flag_tray_click: Arc<AtomicBool>,
@@ -249,7 +242,6 @@ struct WhipClaudeApp {
     total_cracks:   u32,
 
     spawn_requested: bool,
-    respawn_at:     Option<Instant>, // auto-respawn timer after whip drops
     first_frame:    bool,
 }
 
@@ -265,6 +257,8 @@ impl WhipClaudeApp {
         let quit_item   = MenuItem::new("Quit WhipClaude", true, None);
         let respawn_id  = respawn_item.id().clone();
         let quit_id     = quit_item.id().clone();
+        let quit_id_thread    = quit_id.clone();
+        let respawn_id_thread = respawn_id.clone();
         menu.append(&respawn_item).unwrap();
         menu.append(&quit_item).unwrap();
 
@@ -283,9 +277,9 @@ impl WhipClaudeApp {
         std::thread::spawn(move || {
             loop {
                 if let Ok(event) = MenuEvent::receiver().recv() {
-                    if event.id() == &quit_id {
+                    if event.id() == &quit_id_thread {
                         fq.store(true, Ordering::Relaxed);
-                    } else if event.id() == &respawn_id {
+                    } else if event.id() == &respawn_id_thread {
                         fr.store(true, Ordering::Relaxed);
                     }
                 }
@@ -309,9 +303,10 @@ impl WhipClaudeApp {
 
         Self {
             whip: None,
-            macros: MacroQueue::new(),
             audio: AudioPlayer::new(),
             _tray: tray,
+            quit_id,
+            respawn_id,
             flag_quit,
             flag_respawn,
             flag_tray_click,
@@ -327,7 +322,6 @@ impl WhipClaudeApp {
             day_start: Instant::now(),
             total_cracks: 0,
             spawn_requested: true,  // auto-spawn on launch
-            respawn_at: None,
             first_frame: true,
         }
     }
@@ -357,7 +351,7 @@ impl WhipClaudeApp {
             self.cracks_in_window = 0;
             self.audio.play_from(SoundCategory::WhipOnly);
             let idx = (rand::random::<u32>() as usize) % MERCY_PHRASES.len();
-            self.macros.send(MERCY_PHRASES[idx].to_string());
+            send_macro(MERCY_PHRASES[idx].to_string());
             return;
         }
 
@@ -381,7 +375,7 @@ impl WhipClaudeApp {
         let idx = (rand::random::<u32>() as usize) % PHRASES.len();
         let phrase = PHRASES[idx].to_string();
         let phrase = if self.combo >= 5 { phrase.to_uppercase() + "!!!" } else { phrase };
-        self.macros.send(phrase);
+        send_macro(phrase);
     }
 }
 
@@ -412,19 +406,30 @@ impl eframe::App for WhipClaudeApp {
         }
 
         // ── Tray / menu events (set by dedicated listener threads) ───────────
+        // AtomicBool flags set by dedicated listener threads (reliable cross-thread delivery)
         if self.flag_quit.swap(false, Ordering::Relaxed) {
             std::process::exit(0);
         }
         if self.flag_respawn.swap(false, Ordering::Relaxed) {
             self.whip = None;
             self.mercy_active = false;
-            self.respawn_at = None; // skip auto-respawn timer, spawn immediately
             self.spawn_requested = true;
         }
         if self.flag_tray_click.swap(false, Ordering::Relaxed) {
             if let Some(ref mut w) = self.whip {
                 if !w.dropping { w.dropping = true; }
             } else if !self.mercy_active {
+                self.spawn_requested = true;
+            }
+        }
+        // Drain any events that may have arrived directly on this thread
+        while let Ok(event) = MenuEvent::receiver().try_recv() {
+            if event.id() == &self.quit_id {
+                std::process::exit(0);
+            }
+            if event.id() == &self.respawn_id {
+                self.whip = None;
+                self.mercy_active = false;
                 self.spawn_requested = true;
             }
         }
@@ -477,19 +482,7 @@ impl eframe::App for WhipClaudeApp {
         }
         if did_crack { self.on_crack(tip_pos); }
         if whip_gone {
-            self.whip = None;
-            // Auto-respawn after 2 seconds so the whip always comes back
-            if !self.mercy_active {
-                self.respawn_at = Some(now + Duration::from_secs(2));
-            }
-        }
-
-        // Auto-respawn timer
-        if let Some(at) = self.respawn_at {
-            if now >= at {
-                self.respawn_at = None;
-                self.spawn_requested = true;
-            }
+            self.whip = None; // whip fell off — right-click tray → Respawn to bring back
         }
 
         // Passthrough: OFF while whip is active (so we can track mouse),
@@ -514,18 +507,13 @@ impl eframe::App for WhipClaudeApp {
 
         // Idle hint (shown when whip has dropped and passthrough is ON)
         if idle && !self.mercy_active {
-            let secs_left = self.respawn_at
-                .map(|at| at.duration_since(now).as_secs() + 1)
-                .unwrap_or(0);
-            let hint = if secs_left > 0 {
-                format!("⚡ Whip respawning in {}s…  |  right-click tray → Quit", secs_left)
-            } else if self.daily_cracks > 0 {
+            let hint = if self.daily_cracks > 0 {
                 format!(
-                    "⚡ {} cracks today  |  Crack whip → roasts Claude  |  right-click tray → Quit",
+                    "⚡ {} cracks today  |  Crack whip → roasts Claude  |  right-click tray → Respawn / Quit",
                     self.daily_cracks
                 )
             } else {
-                "⚡ WhipClaude  |  Crack the whip to yell at Claude  |  right-click tray → Quit".to_string()
+                "⚡ WhipClaude  |  Crack the whip to yell at Claude  |  right-click tray → Respawn / Quit".to_string()
             };
             painter.text(
                 egui::pos2(screen.center().x, screen.bottom() - 24.0),

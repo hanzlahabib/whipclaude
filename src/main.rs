@@ -249,6 +249,7 @@ struct WhipClaudeApp {
     total_cracks:   u32,
 
     spawn_requested: bool,
+    respawn_at:     Option<Instant>, // auto-respawn timer after whip drops
     first_frame:    bool,
 }
 
@@ -326,6 +327,7 @@ impl WhipClaudeApp {
             day_start: Instant::now(),
             total_cracks: 0,
             spawn_requested: true,  // auto-spawn on launch
+            respawn_at: None,
             first_frame: true,
         }
     }
@@ -416,6 +418,7 @@ impl eframe::App for WhipClaudeApp {
         if self.flag_respawn.swap(false, Ordering::Relaxed) {
             self.whip = None;
             self.mercy_active = false;
+            self.respawn_at = None; // skip auto-respawn timer, spawn immediately
             self.spawn_requested = true;
         }
         if self.flag_tray_click.swap(false, Ordering::Relaxed) {
@@ -474,7 +477,19 @@ impl eframe::App for WhipClaudeApp {
         }
         if did_crack { self.on_crack(tip_pos); }
         if whip_gone {
-            self.whip = None; // fell off screen — right-click tray → Respawn to bring back
+            self.whip = None;
+            // Auto-respawn after 2 seconds so the whip always comes back
+            if !self.mercy_active {
+                self.respawn_at = Some(now + Duration::from_secs(2));
+            }
+        }
+
+        // Auto-respawn timer
+        if let Some(at) = self.respawn_at {
+            if now >= at {
+                self.respawn_at = None;
+                self.spawn_requested = true;
+            }
         }
 
         // Passthrough: OFF while whip is active (so we can track mouse),
@@ -499,13 +514,18 @@ impl eframe::App for WhipClaudeApp {
 
         // Idle hint (shown when whip has dropped and passthrough is ON)
         if idle && !self.mercy_active {
-            let hint = if self.daily_cracks > 0 {
+            let secs_left = self.respawn_at
+                .map(|at| at.duration_since(now).as_secs() + 1)
+                .unwrap_or(0);
+            let hint = if secs_left > 0 {
+                format!("⚡ Whip respawning in {}s…  |  right-click tray → Quit", secs_left)
+            } else if self.daily_cracks > 0 {
                 format!(
-                    "⚡ {} cracks today  |  Crack the whip → types a roast into Claude  |  right-click tray → Respawn / Quit",
+                    "⚡ {} cracks today  |  Crack whip → roasts Claude  |  right-click tray → Quit",
                     self.daily_cracks
                 )
             } else {
-                "⚡ WhipClaude  |  Crack the whip → types a roast into Claude  |  right-click tray → Respawn / Quit".to_string()
+                "⚡ WhipClaude  |  Crack the whip to yell at Claude  |  right-click tray → Quit".to_string()
             };
             painter.text(
                 egui::pos2(screen.center().x, screen.bottom() - 24.0),

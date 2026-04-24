@@ -350,10 +350,14 @@ impl eframe::App for WhipClaudeApp {
             self.first_frame = false;
         }
 
+        // ── Window close request (taskbar right-click → Close, OS shutdown) ────
+        if ctx.input(|i| i.viewport().close_requested()) {
+            std::process::exit(0);
+        }
+
         // ── ESC to quit (works while whip is active / passthrough OFF) ────────
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            return;
+            std::process::exit(0);
         }
 
         // ── Tray events ───────────────────────────────────────────────────────
@@ -507,10 +511,35 @@ impl eframe::App for WhipClaudeApp {
     }
 }
 
+// Force-hide the window from the Windows taskbar via Win32 API.
+// winit's with_taskbar(false) hint is unreliable in cross-compiled builds.
+#[cfg(target_os = "windows")]
+fn force_hide_from_taskbar() {
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        unsafe {
+            use winapi::um::winuser::*;
+            let title: Vec<u16> = "WhipClaude\0".encode_utf16().collect();
+            let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+            if hwnd.is_null() { return; }
+            let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+            // WS_EX_TOOLWINDOW hides from taskbar; remove WS_EX_APPWINDOW which forces it back
+            let new_ex = (ex | WS_EX_TOOLWINDOW) & !WS_EX_APPWINDOW;
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new_ex as isize);
+            // SWP_FRAMECHANGED flushes the style change without moving/resizing
+            SetWindowPos(hwnd, std::ptr::null_mut(), 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+        }
+    });
+}
+
 fn run_gui() {
     // GTK must be initialized before tray-icon on Linux
     #[cfg(target_os = "linux")]
     gtk::init().expect("Failed to initialize GTK");
+
+    #[cfg(target_os = "windows")]
+    force_hide_from_taskbar();
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

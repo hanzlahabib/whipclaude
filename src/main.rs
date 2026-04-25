@@ -613,18 +613,11 @@ impl eframe::App for WhipClaudeApp {
             );
         }
 
-        // Only keep repainting while something is actually animating.
-        // When fully idle (no whip, no mercy, no flash) we stop driving the
-        // render loop — listener threads wake us up via request_repaint().
-        let animating = self.whip.is_some()
-            || self.mercy_active
-            || self.flash_start.is_some();
-        if animating {
-            ctx.request_repaint();
-        } else {
-            // Check the idle tray flags on a slow tick as a safety net
-            ctx.request_repaint_after(Duration::from_millis(250));
-        }
+        // Always drive the loop — on Windows, cross-thread request_repaint()
+        // from tray/menu listeners can fail to wake an idle viewport that's
+        // not foregrounded, which makes Respawn/Quit silently no-op. The minor
+        // idle cost is worth keeping the tray fully responsive.
+        ctx.request_repaint();
     }
 }
 
@@ -645,8 +638,10 @@ fn force_hide_from_taskbar() {
             }
             if hwnd.is_null() { return; }
             let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
-            // WS_EX_TOOLWINDOW hides from taskbar; remove WS_EX_APPWINDOW which forces it back
-            let new_ex = (ex | WS_EX_TOOLWINDOW) & !WS_EX_APPWINDOW;
+            // WS_EX_TOOLWINDOW: hides from taskbar AND alt-tab.
+            // WS_EX_NOACTIVATE: refuses focus, suppresses the alt-tab thumbnail.
+            // Remove WS_EX_APPWINDOW which forces the window back into the taskbar.
+            let new_ex = (ex | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE) & !WS_EX_APPWINDOW;
             SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new_ex as isize);
             // SWP_FRAMECHANGED flushes the style change without moving/resizing
             SetWindowPos(hwnd, std::ptr::null_mut(), 0, 0, 0, 0,

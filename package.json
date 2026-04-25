@@ -1,6 +1,6 @@
 {
   "name": "whipclaude",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Crack a whip at Claude when it's going too slow. A transparent overlay with physics-based whip animation, sound effects, combo system, and mercy mode.",
   "keywords": ["claude", "ai", "fun", "whip", "tray", "desktop"],
   "license": "MIT",

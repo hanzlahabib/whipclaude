@@ -174,7 +174,7 @@ fn draw_crack_flash(painter: &egui::Painter, pos: egui::Pos2, alpha: f32) {
 // ── Combo label ───────────────────────────────────────────────────────────────
 fn draw_combo(painter: &egui::Painter, combo: u32, pos: egui::Pos2) {
     if combo < 2 { return; }
-    let label = format!("{}x COMBO!", combo);
+    let label = format!("{combo}x COMBO!");
     let color = if combo >= 5 { Color32::from_rgb(255, 80, 0) } else { Color32::from_rgb(255, 220, 0) };
     painter.text(pos, egui::Align2::CENTER_CENTER, &label, FontId::proportional(28.0), color);
 }
@@ -419,7 +419,7 @@ impl WhipClaudeApp {
         // Pick phrase (extra emphasis at high combo — phrases are already uppercase)
         let picked = PHRASES.choose(&mut rand::rng()).copied().unwrap_or("");
         let phrase = if self.combo >= 5 {
-            format!("{}!!!", picked)
+            format!("{picked}!!!")
         } else {
             picked.to_string()
         };
@@ -650,13 +650,55 @@ fn force_hide_from_taskbar() {
     });
 }
 
+// Keep the eframe/winit frame loop ticking even when the overlay is unfocused.
+//
+// An unfocused, transparent, always-on-top tool window can have its redraw
+// suppressed by Windows. When that happens, `update()` stops running and the
+// cross-thread `request_repaint()` calls from the tray/menu listener threads
+// (and the unconditional one inside `update()` itself) can no longer wake it —
+// so `flag_respawn` / `flag_quit` sit unread and the tray menu becomes a no-op
+// until the process is killed. Invalidating the window at the Win32 level forces
+// a WM_PAINT, which winit surfaces as RedrawRequested, guaranteeing `update()`
+// keeps running and the tray stays responsive.
+#[cfg(target_os = "windows")]
+fn keep_overlay_awake() {
+    std::thread::spawn(|| {
+        use winapi::um::winuser::*;
+        let title: Vec<u16> = "WhipClaude\0".encode_utf16().collect();
+        // Poll for the window — startup timing varies across machines.
+        let mut hwnd = std::ptr::null_mut();
+        for _ in 0..50 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            hwnd = unsafe { FindWindowW(std::ptr::null(), title.as_ptr()) };
+            if !hwnd.is_null() { break; }
+        }
+        if hwnd.is_null() { return; }
+        // ~10 Hz is plenty for tray responsiveness and costs less than the
+        // full-framerate unconditional repaint it backstops.
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            unsafe {
+                RedrawWindow(
+                    hwnd,
+                    std::ptr::null(),
+                    std::ptr::null_mut(),
+                    RDW_INVALIDATE | RDW_INTERNALPAINT,
+                );
+            }
+        }
+    });
+}
+
 fn run_gui() {
     // GTK must be initialized before tray-icon on Linux
     #[cfg(target_os = "linux")]
     gtk::init().expect("Failed to initialize GTK");
 
     #[cfg(target_os = "windows")]
-    force_hide_from_taskbar();
+    {
+        force_hide_from_taskbar();
+        keep_overlay_awake();
+    }
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -680,7 +722,7 @@ fn cli_crack(phrase: Option<String>, delay_secs: u64) {
     // Countdown so the user can switch focus to the Claude Code window
     if delay_secs > 0 {
         for i in (1..=delay_secs).rev() {
-            eprint!("\r🔴 Cracking in {}s... (switch to Claude Code now)  ", i);
+            eprint!("\r🔴 Cracking in {i}s... (switch to Claude Code now)  ");
             let _ = std::io::Write::flush(&mut std::io::stderr());
             std::thread::sleep(Duration::from_secs(1));
         }
@@ -728,10 +770,9 @@ fn main() {
             Ok(l) => l,
             Err(e) => {
                 eprintln!(
-                    "WhipClaude: could not acquire single-instance lock on 127.0.0.1:57432 ({}).\n\
+                    "WhipClaude: could not acquire single-instance lock on 127.0.0.1:57432 ({e}).\n\
                      Another WhipClaude instance may already be running — look for the tray icon.\n\
                      If no other instance is running, port 57432 is held by an unrelated process.",
-                    e
                 );
                 return;
             }

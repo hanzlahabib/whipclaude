@@ -650,18 +650,26 @@ fn force_hide_from_taskbar() {
     });
 }
 
-// Keep the eframe/winit frame loop ticking even when the overlay is unfocused.
+// Owns the overlay's Win32-level behaviour on Windows: stretch it across the
+// whole virtual desktop (all monitors) and keep its frame loop ticking.
 //
-// An unfocused, transparent, always-on-top tool window can have its redraw
-// suppressed by Windows. When that happens, `update()` stops running and the
-// cross-thread `request_repaint()` calls from the tray/menu listener threads
-// (and the unconditional one inside `update()` itself) can no longer wake it —
-// so `flag_respawn` / `flag_quit` sit unread and the tray menu becomes a no-op
-// until the process is killed. Invalidating the window at the Win32 level forces
-// a WM_PAINT, which winit surfaces as RedrawRequested, guaranteeing `update()`
-// keeps running and the tray stays responsive.
+// 1. Multi-monitor: maximizing only covers the monitor the window opened on.
+//    The virtual desktop — SM_*VIRTUALSCREEN, the bounding box of every monitor
+//    in physical pixels — is the region we actually want. SetWindowPos works in
+//    physical pixels, so this avoids the logical/physical DPI conversion that
+//    ViewportBuilder's logical-point sizing would force. Re-applied whenever the
+//    bounds change, so plugging/unplugging a monitor re-stretches for free.
+//
+// 2. Responsiveness: an unfocused, transparent, always-on-top tool window can
+//    have its redraw suppressed by Windows. When that happens `update()` stops
+//    running and the cross-thread `request_repaint()` calls from the tray/menu
+//    listener threads (and the unconditional one inside `update()`) can no longer
+//    wake it — so `flag_respawn` / `flag_quit` sit unread and the tray menu
+//    becomes a no-op until the process is killed. Invalidating the window at the
+//    Win32 level forces a WM_PAINT, which winit surfaces as RedrawRequested,
+//    guaranteeing `update()` keeps running and the tray stays responsive.
 #[cfg(target_os = "windows")]
-fn keep_overlay_awake() {
+fn manage_overlay_window() {
     std::thread::spawn(|| {
         use winapi::um::winuser::*;
         let title: Vec<u16> = "WhipClaude\0".encode_utf16().collect();
@@ -673,18 +681,29 @@ fn keep_overlay_awake() {
             if !hwnd.is_null() { break; }
         }
         if hwnd.is_null() { return; }
-        // ~10 Hz is plenty for tray responsiveness and costs less than the
-        // full-framerate unconditional repaint it backstops.
+
+        // Re-stretch only when the virtual-desktop bounds actually change
+        // (cheap, and handles monitor hotplug / resolution changes for free).
+        let mut last_bounds = (0i32, 0i32, 0i32, 0i32);
         loop {
-            std::thread::sleep(std::time::Duration::from_millis(100));
             unsafe {
-                RedrawWindow(
-                    hwnd,
-                    std::ptr::null(),
-                    std::ptr::null_mut(),
-                    RDW_INVALIDATE | RDW_INTERNALPAINT,
-                );
+                let x = GetSystemMetrics(SM_XVIRTUALSCREEN);
+                let y = GetSystemMetrics(SM_YVIRTUALSCREEN);
+                let w = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+                let h = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+                if w > 0 && h > 0 && (x, y, w, h) != last_bounds {
+                    // HWND_TOPMOST reinforces always-on-top; SWP_NOACTIVATE keeps
+                    // focus on the user's real window.
+                    SetWindowPos(hwnd, HWND_TOPMOST, x, y, w, h,
+                        SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+                    last_bounds = (x, y, w, h);
+                }
+                // ~10 Hz is plenty for tray responsiveness and costs less than
+                // the full-framerate unconditional repaint it backstops.
+                RedrawWindow(hwnd, std::ptr::null(), std::ptr::null_mut(),
+                    RDW_INVALIDATE | RDW_INTERNALPAINT);
             }
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
     });
 }
@@ -697,17 +716,28 @@ fn run_gui() {
     #[cfg(target_os = "windows")]
     {
         force_hide_from_taskbar();
-        keep_overlay_awake();
+        manage_overlay_window();
+    }
+
+    // On Windows the overlay is stretched across the full virtual desktop (every
+    // monitor) by manage_overlay_window() via Win32, so we must NOT maximize
+    // (maximize covers only the monitor it opened on). Elsewhere, maximize onto
+    // the current monitor.
+    #[allow(unused_mut)]
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_transparent(true)
+        .with_decorations(false)
+        .with_always_on_top()
+        .with_taskbar(false)
+        .with_title("WhipClaude");
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        viewport = viewport.with_maximized(true);
     }
 
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_transparent(true)
-            .with_decorations(false)
-            .with_always_on_top()
-            .with_maximized(true)
-            .with_taskbar(false)
-            .with_title("WhipClaude"),
+        viewport,
         ..Default::default()
     };
 

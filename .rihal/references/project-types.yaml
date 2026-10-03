@@ -1,0 +1,270 @@
+# Project Type Signals & Discovery Framework
+#
+# This file maps project signals (technology mentions, keywords) to project types,
+# defining which sections are required/skipped and what discovery questions drive
+# requirements gathering for each type.
+#
+# Usage in workflows: Load this YAML, detect project type from user input + file scan,
+# then adapt discovery questions and section requirements per type.
+
+api-backend:
+  display_name: "API / Backend Service"
+  signals:
+    - express
+    - fastapi
+    - flask
+    - django
+    - rails
+    - spring boot
+    - nestjs
+    - rest api
+    - graphql
+    - rpc
+    - microservice
+    - serverless
+    - lambda
+    - cloud function
+  required_sections:
+    - endpoints
+    - authentication
+    - authorization
+    - rate-limiting
+    - error-responses
+    - data-models
+    - versioning
+  skip_sections:
+    - ux-flows
+    - accessibility
+    - branding
+    - ui-components
+  discovery_questions:
+    - "What is the expected RPS (requests per second) at peak load?"
+    - "What authentication model? (API keys, OAuth2, JWT, mTLS)"
+    - "Are there SLA requirements (uptime, latency targets)?"
+    - "What is your data retention policy?"
+    - "Do you need idempotency or exactly-once semantics?"
+    - "What deployment environment? (AWS, GCP, self-hosted)"
+
+mobile-app:
+  display_name: "Mobile Application"
+  signals:
+    - ios
+    - android
+    - react native
+    - flutter
+    - swift
+    - kotlin
+    - expo
+    - native mobile
+    - app store
+    - google play
+  required_sections:
+    - offline-support
+    - push-notifications
+    - store-compliance
+    - deep-links
+    - permissions
+    - local-storage
+    - sync-strategy
+  skip_sections:
+    - server-scaling
+    - horizontal-scaling
+  discovery_questions:
+    - "Target platforms? (iOS only, Android only, or both)"
+    - "Minimum OS version you support?"
+    - "Is offline-first mode required?"
+    - "Do you need push notifications?"
+    - "What's your backend API? (REST, GraphQL, WebSocket)"
+    - "Are there App Store / Play Store specific requirements?"
+
+saas-b2b:
+  display_name: "SaaS / B2B Platform"
+  signals:
+    - multi-tenant
+    - subscription
+    - stripe
+    - billing
+    - saas
+    - b2b
+    - team management
+    - roles and permissions
+    - data isolation
+  required_sections:
+    - multi-tenancy
+    - billing
+    - subscription-management
+    - audit-logging
+    - data-isolation
+    - role-based-access
+    - compliance
+    - onboarding
+  skip_sections: []
+  discovery_questions:
+    - "How many customers do you expect in Y1 and Y5?"
+    - "What's your pricing model? (per-seat, per-usage, fixed)"
+    - "Do you need compliance certifications? (SOC2, GDPR, HIPAA)"
+    - "How do you isolate customer data?"
+    - "What's your maximum acceptable data migration time for offboarding?"
+    - "Are there audit or compliance logging requirements?"
+
+cli-tool:
+  display_name: "Command-Line Interface / Tool"
+  signals:
+    - cli
+    - command line
+    - terminal
+    - shell
+    - npm
+    - pip
+    - cargo
+    - go cli
+    - console app
+    - argparse
+    - commander.js
+  required_sections:
+    - commands
+    - help-text
+    - exit-codes
+    - error-messages
+    - config-file
+    - env-vars
+  skip_sections:
+    - ux-flows
+    - responsive-design
+    - browser-compatibility
+  discovery_questions:
+    - "Who is the primary user? (developers, DevOps, end-users)"
+    - "Does it need a config file? Where should it live?"
+    - "What are the main commands and subcommands?"
+    - "Do you need shell completion (bash, zsh, fish)?"
+    - "How will users install it? (npm, pip, binary download)"
+
+web-app:
+  display_name: "Web Application / SPA"
+  signals:
+    - react
+    - vue
+    - angular
+    - next.js
+    - nuxt
+    - svelte
+    - sveltekit
+    - astro
+    - web app
+    - single page app
+    - spa
+    - browser
+    - responsive
+  required_sections:
+    - ui-components
+    - state-management
+    - routing
+    - authentication
+    - performance
+    - accessibility
+    - ux-flows
+  skip_sections:
+    - offline-support
+    - push-notifications
+    - app-store-compliance
+  discovery_questions:
+    - "Who is your primary user? (internal team, paying customers, public)"
+    - "What browsers and versions must you support?"
+    - "What's your target Lighthouse score?"
+    - "Do you need server-side rendering (SSR) or is CSR fine?"
+    - "What is the expected concurrent user count?"
+    - "Are there accessibility requirements? (WCAG 2.1 level AA)"
+
+desktop-app:
+  display_name: "Desktop Application"
+  signals:
+    - electron
+    - tauri
+    - desktop
+    - macos
+    - windows
+    - linux
+    - native app
+    - dmg
+    - exe
+    - .app
+  required_sections:
+    - auto-updates
+    - file-handling
+    - system-integration
+    - permissions
+    - installer
+    - signing-and-notarization
+  skip_sections:
+    - responsive-design
+  discovery_questions:
+    - "Target operating systems? (Windows, macOS, Linux, or all)"
+    - "Do you need auto-updates? (code signing, channels)"
+    - "What file types does your app work with?"
+    - "Do you need system tray integration or file associations?"
+    - "Does the app need to run on startup?"
+
+iot:
+  display_name: "IoT / Embedded Device"
+  signals:
+    - iot
+    - embedded
+    - firmware
+    - microcontroller
+    - arduino
+    - esp32
+    - rust
+    - c
+    - mqtt
+    - zigbee
+    - lorawan
+    - edge computing
+  required_sections:
+    - hardware-specs
+    - power-consumption
+    - communication-protocol
+    - firmware-updates
+    - reliability
+    - monitoring
+  skip_sections:
+    - responsive-design
+    - accessibility
+  discovery_questions:
+    - "What hardware platform? (specific board, custom design)"
+    - "Power consumption targets? (battery life, continuous power)"
+    - "Communication protocol? (WiFi, cellular, MQTT, Bluetooth)"
+    - "How often do devices need firmware updates?"
+    - "What's the deployment scale? (10s, 1000s, millions of devices)"
+    - "Do you need edge processing or cloud-based analytics?"
+
+dev-tool:
+  display_name: "Developer Tool / IDE Extension / Library"
+  signals:
+    - library
+    - sdk
+    - npm package
+    - framework
+    - plugin
+    - extension
+    - vscode extension
+    - ide plugin
+    - compiler
+    - linter
+    - formatter
+  required_sections:
+    - api-documentation
+    - usage-examples
+    - error-messages
+    - performance-benchmarks
+    - compatibility-matrix
+    - migration-guide
+  skip_sections:
+    - ux-flows
+    - branding
+  discovery_questions:
+    - "What developers use this? (experience level, pain point)"
+    - "Is this a library, framework, tool, or extension?"
+    - "What's your versioning strategy? (semver, rolling release)"
+    - "What are the minimum dependency versions?"
+    - "How will developers discover and install this?"
+    - "Do you need a community or plugin ecosystem?"

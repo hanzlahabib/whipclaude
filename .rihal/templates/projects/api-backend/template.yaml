@@ -1,0 +1,17 @@
+name: api-backend
+display: "API Backend"
+description: "Headless API service — authentication, data model, public API, SDK, docs"
+recommended_modules:
+  - core
+  - execution
+phases:
+  - "01 — Scaffolding (framework, DB, migrations, CI)"
+  - "02 — Auth + API keys"
+  - "03 — Core resources + REST/GraphQL contract"
+  - "04 — Rate limiting + quotas"
+  - "05 — SDK + public docs"
+  - "06 — Observability + SLOs"
+next_steps: |
+  Seeded. Common follow-ups:
+    /rihal:council REST vs GraphQL vs both for this API?
+    /rihal:plan phase 01

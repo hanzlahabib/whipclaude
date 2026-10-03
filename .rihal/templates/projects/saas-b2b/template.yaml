@@ -1,0 +1,18 @@
+name: saas-b2b
+display: "SaaS B2B"
+description: "Multi-tenant B2B SaaS — auth, orgs, billing, RBAC, admin console, audit log"
+recommended_modules:
+  - core
+  - execution
+  - discovery
+phases:
+  - "01 — Foundations (auth, DB, env)"
+  - "02 — Multi-tenancy + RBAC"
+  - "03 — Billing + subscription lifecycle"
+  - "04 — Admin console + audit log"
+  - "05 — Observability + incident response"
+  - "06 — Launch readiness (SLA, docs, support)"
+next_steps: |
+  Seeded. Common follow-ups:
+    /rihal:council what's the first customer segment we should focus on?
+    /rihal:plan phase 01

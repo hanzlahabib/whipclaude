@@ -1,0 +1,26 @@
+{
+  "version": "1",
+  "project": "whipclaude",
+  "created": "2026-04-24T07:47:34.583Z",
+  "updated": "2026-04-24T07:47:34.583Z",
+  "current_phase": "01",
+  "current_plan": 0,
+  "current_sprint": null,
+  "milestone": "M1 — Initial Delivery",
+  "phases": [
+    {
+      "id": "01",
+      "name": "Setup & Scaffolding",
+      "status": "planned"
+    }
+  ],
+  "executions": [],
+  "decisions": [],
+  "blockers": [],
+  "council_sessions": [],
+  "chains": [],
+  "workstreams": [],
+  "active_workstream": null,
+  "last_session": null,
+  "velocity_history": []
+}

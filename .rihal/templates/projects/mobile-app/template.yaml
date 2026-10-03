@@ -1,0 +1,17 @@
+name: mobile-app
+display: "Mobile App"
+description: "iOS + Android app — onboarding, core feature, offline, push, store submission"
+recommended_modules:
+  - core
+  - execution
+phases:
+  - "01 — Scaffolding (framework, navigation, CI, TestFlight/Internal testing)"
+  - "02 — Auth + onboarding"
+  - "03 — Core feature"
+  - "04 — Offline + sync"
+  - "05 — Push notifications + deep links"
+  - "06 — Store submission + launch"
+next_steps: |
+  Seeded. Common follow-ups:
+    /rihal:council native (Swift/Kotlin) vs React Native vs Flutter for this app?
+    /rihal:plan phase 01
